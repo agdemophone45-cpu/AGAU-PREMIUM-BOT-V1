@@ -5,7 +5,10 @@ import os
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 # Admin Configuration
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+ADMIN_IDS = (6597366825, 6650444747)
+
+# Backward compatibility with older code
+ADMIN_ID = ADMIN_IDS[0]
 
 # Admin Security
 ADMIN_PIN = os.getenv("ADMIN_PIN", "")
@@ -19,52 +22,56 @@ SUPPORT_TELEGRAM = os.getenv(
     "SUPPORT_TELEGRAM",
     "@ag_support_bd"
 )
-
-SUPPORT_EMAIL = os.getenv(
-    "SUPPORT_EMAIL",
-    ""
-)
+SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", "")
 
 # Payment Configuration
+# Financial settings should be configured and managed
+# by a responsible adult owner.
 BKASH_NUMBER = os.getenv("BKASH_NUMBER", "")
 NAGAD_NUMBER = os.getenv("NAGAD_NUMBER", "")
 
 # Default Premium Packages
 DEFAULT_PACKAGES = [
     {
-        "name": "1 DAY",
-        "duration_days": 1,
-        "price": 4
+        "name": "5 DAY",
+        "duration_days": 5,
+        "price": 7,
+        "active": True
     },
     {
         "name": "7 DAY",
         "duration_days": 7,
-        "price": 25
+        "price": 10,
+        "active": True
     },
     {
         "name": "30 DAY",
         "duration_days": 30,
-        "price": 100
+        "price": 44,
+        "active": True
     },
     {
         "name": "3 MONTHS",
         "duration_days": 90,
-        "price": 248
+        "price": 120,
+        "active": True
     },
     {
         "name": "1 YEAR",
         "duration_days": 365,
-        "price": 1000
+        "price": 500,
+        "active": True
     },
     {
         "name": "LIFETIME",
         "duration_days": 0,
-        "price": 5000
+        "price": 0,
+        "active": False
     }
 ]
 
 # Referral Configuration
-REFERRAL_REWARD = 5
+REFERRAL_REWARD = 1
 
 # Language Configuration
 DEFAULT_LANGUAGE = "bn"
