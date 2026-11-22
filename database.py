@@ -1,28 +1,30 @@
 
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config import DB_PATH, DEFAULT_PACKAGES
 
 
+def now_iso():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 def get_connection():
-    """Create database connection."""
     folder = os.path.dirname(DB_PATH)
 
     if folder:
         os.makedirs(folder, exist_ok=True)
 
-    connection = sqlite3.connect(DB_PATH)
+    connection = sqlite3.connect(DB_PATH, timeout=30)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA busy_timeout = 30000")
 
     return connection
 
 
 def init_db():
-    """Initialize all database tables."""
-
     with get_connection() as db:
 
         db.execute("""
@@ -155,34 +157,118 @@ def init_db():
             )
         """)
 
-        # Insert default packages only once
-        package_count = db.execute(
-            "SELECT COUNT(*) FROM packages"
-        ).fetchone()[0]
+        # Job Admin applications
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS job_admin_applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                applicant_name TEXT,
+                email TEXT,
+                experience TEXT,
+                reason TEXT,
+                status TEXT DEFAULT 'pending',
+                reviewed_by INTEGER,
+                reviewed_at TEXT,
+                created_at TEXT,
+                FOREIGN KEY(user_id) REFERENCES users(user_id)
+            )
+        """)
 
-        if package_count == 0:
+        # Approved Job Admins and individual permissions
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS job_admins (
+                user_id INTEGER PRIMARY KEY,
+                permissions TEXT DEFAULT '{}',
+                active INTEGER DEFAULT 1,
+                approved_by INTEGER,
+                approved_at TEXT,
+                FOREIGN KEY(user_id) REFERENCES users(user_id)
+            )
+        """)
+
+        # Private bot-mediated support tickets
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS support_tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_code TEXT UNIQUE,
+                user_id INTEGER NOT NULL,
+                ticket_type TEXT DEFAULT 'support',
+                status TEXT DEFAULT 'open',
+                assigned_owner INTEGER,
+                created_at TEXT,
+                closed_at TEXT,
+                FOREIGN KEY(user_id) REFERENCES users(user_id)
+            )
+        """)
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS support_ticket_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id INTEGER NOT NULL,
+                sender_id INTEGER NOT NULL,
+                message TEXT,
+                file_id TEXT,
+                created_at TEXT,
+                FOREIGN KEY(ticket_id)
+                    REFERENCES support_tickets(id)
+            )
+        """)
+
+        # One-time package initialization/migration.
+        migration = db.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            ("packages_v2_migrated",),
+        ).fetchone()
+
+        if not migration:
+            db.execute(
+                "UPDATE packages SET active = 0"
+            )
+
             for package in DEFAULT_PACKAGES:
-                db.execute("""
-                    INSERT INTO packages
-                    (name, duration_days, price)
-                    VALUES (?, ?, ?)
-                """, (
-                    package["name"],
-                    package["duration_days"],
-                    package["price"]
-                ))
+                existing = db.execute(
+                    "SELECT id FROM packages WHERE name = ?",
+                    (package["name"],),
+                ).fetchone()
+
+                if existing:
+                    db.execute("""
+                        UPDATE packages
+                        SET duration_days = ?,
+                            price = ?,
+                            active = ?
+                        WHERE id = ?
+                    """, (
+                        package["duration_days"],
+                        package["price"],
+                        int(package.get("active", True)),
+                        existing["id"],
+                    ))
+                else:
+                    db.execute("""
+                        INSERT INTO packages
+                        (name, duration_days, price, active)
+                        VALUES (?, ?, ?, ?)
+                    """, (
+                        package["name"],
+                        package["duration_days"],
+                        package["price"],
+                        int(package.get("active", True)),
+                    ))
+
+            db.execute("""
+                INSERT OR REPLACE INTO settings (key, value)
+                VALUES ('packages_v2_migrated', '1')
+            """)
 
 
 def register_user(user_id, username, full_name):
-    """Register a new user or update existing profile."""
-
-    now = datetime.utcnow().isoformat()
+    now = now_iso()
 
     with get_connection() as db:
-
         existing = db.execute(
             "SELECT user_id FROM users WHERE user_id = ?",
-            (user_id,)
+            (user_id,),
         ).fetchone()
 
         if existing:
@@ -211,41 +297,45 @@ def register_user(user_id, username, full_name):
 
 
 def get_user(user_id):
-    """Get user information."""
-
     with get_connection() as db:
         return db.execute(
             "SELECT * FROM users WHERE user_id = ?",
-            (user_id,)
+            (user_id,),
         ).fetchone()
 
 
 def get_wallet(user_id):
-    """Get user's wallet balances."""
-
     with get_connection() as db:
         return db.execute(
             "SELECT * FROM wallets WHERE user_id = ?",
-            (user_id,)
+            (user_id,),
         ).fetchone()
 
 
-def get_packages():
-    """Get active premium packages."""
-
+def get_packages(include_inactive=False):
     with get_connection() as db:
-        return db.execute("""
-            SELECT * FROM packages
-            WHERE active = 1
-            ORDER BY id
-        """).fetchall()
+        if include_inactive:
+            rows = db.execute("""
+                SELECT * FROM packages
+                ORDER BY id
+            """).fetchall()
+        else:
+            rows = db.execute("""
+                SELECT * FROM packages
+                WHERE active = 1
+                ORDER BY id
+            """).fetchall()
+
+        return [dict(row) for row in rows]
 
 
-def add_transaction(user_id, transaction_type, amount,
-                    status="pending", details=""):
-
-    """Create transaction history entry."""
-
+def add_transaction(
+    user_id,
+    transaction_type,
+    amount,
+    status="pending",
+    details="",
+):
     with get_connection() as db:
         cursor = db.execute("""
             INSERT INTO transactions
@@ -257,7 +347,29 @@ def add_transaction(user_id, transaction_type, amount,
             amount,
             status,
             details,
-            datetime.utcnow().isoformat()
+            now_iso(),
+        ))
+
+        return cursor.lastrowid
+
+
+def add_admin_log(
+    admin_id,
+    action,
+    target_user=None,
+    reason="",
+):
+    with get_connection() as db:
+        cursor = db.execute("""
+            INSERT INTO admin_logs
+            (admin_id, action, target_user, reason, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            admin_id,
+            action,
+            target_user,
+            reason,
+            now_iso(),
         ))
 
         return cursor.lastrowid
