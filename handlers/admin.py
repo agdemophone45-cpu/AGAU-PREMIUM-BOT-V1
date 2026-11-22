@@ -8,7 +8,7 @@ from telegram.ext import (
 )
 
 from config import ADMIN_IDS
-from database import get_connection
+from database import get_connection, add_admin_log
 from keyboards import admin_menu, main_menu
 
 
@@ -26,8 +26,10 @@ async def admin_command(
     user_id = update.effective_user.id
 
     if not is_admin(user_id):
-        await update.message.reply_text("⛔ Access Denied.")
+        await update.message.reply_text("Access Denied.")
         return
+
+    context.user_data.clear()
 
     await update.message.reply_text(
         "🔐 AGAU PREMIUM BOT ADMIN PANEL\n\n"
@@ -77,6 +79,13 @@ async def dashboard(
             """
         ).fetchone()[0]
 
+        job_applications = db.execute(
+            """
+            SELECT COUNT(*) FROM job_admin_applications
+            WHERE status = 'pending'
+            """
+        ).fetchone()[0]
+
     await update.message.reply_text(
         "📊 ADMIN DASHBOARD\n\n"
         f"👥 Total Users: {users}\n"
@@ -84,7 +93,8 @@ async def dashboard(
         f"💎 Premium Users: {premium}\n"
         f"📥 Pending Deposits: {deposits}\n"
         f"💸 Pending Withdrawals: {withdrawals}\n"
-        f"🎯 Pending Tasks: {tasks}"
+        f"🎯 Pending Tasks: {tasks}\n"
+        f"👨‍💼 Job Admin Applications: {job_applications}"
     )
 
 
@@ -102,7 +112,6 @@ async def manage_users(
 
 async def show_user(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
     target_id: int,
 ):
     with get_connection() as db:
@@ -155,23 +164,16 @@ async def search_user(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    if context.user_data.get("admin_action") != "search_user":
-        return
-
-    if not update.message or not update.message.text:
-        return
-
     try:
         target_id = int(update.message.text.strip())
-    except ValueError:
+    except (ValueError, TypeError):
         await update.message.reply_text(
             "সঠিক Telegram ID লিখুন।"
         )
         return
 
     context.user_data.pop("admin_action", None)
-
-    await show_user(update, context, target_id)
+    await show_user(update, target_id)
 
 
 async def pending_deposits(
@@ -236,6 +238,37 @@ async def pending_withdrawals(
         )
 
 
+async def show_admin_logs(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    with get_connection() as db:
+        rows = db.execute(
+            """
+            SELECT admin_id, action, target_user, reason, created_at
+            FROM admin_logs
+            ORDER BY id DESC
+            LIMIT 20
+            """
+        ).fetchall()
+
+    if not rows:
+        await update.message.reply_text(
+            "এখনো কোনো Admin Activity Log নেই।"
+        )
+        return
+
+    for row in rows:
+        await update.message.reply_text(
+            "📜 ADMIN ACTIVITY\n\n"
+            f"Owner ID: {row['admin_id']}\n"
+            f"Action: {row['action']}\n"
+            f"Target: {row['target_user'] or 'N/A'}\n"
+            f"Reason: {row['reason'] or 'N/A'}\n"
+            f"Date: {row['created_at']}"
+        )
+
+
 async def admin_router(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -250,7 +283,6 @@ async def admin_router(
 
     text = update.message.text.strip()
 
-    # Pending user search has priority over menu routing.
     if context.user_data.get("admin_action") == "search_user":
         await search_user(update, context)
         return
@@ -267,51 +299,28 @@ async def admin_router(
     elif text == "💸 Withdraw Requests":
         await pending_withdrawals(update, context)
 
+    elif text == "📜 Admin Logs":
+        await show_admin_logs(update, context)
+
     elif text == "🔙 User Menu":
         context.user_data.clear()
+
         await update.message.reply_text(
             "User Menu",
             reply_markup=main_menu(),
         )
 
-    elif text == "💎 Packages":
+    elif text in (
+        "💎 Packages",
+        "💳 Payment Settings",
+        "🎯 Task Management",
+        "📢 Broadcast",
+        "📞 Support Settings",
+        "⚙️ Settings",
+        "👨‍💼 Job Admin",
+    ):
         await update.message.reply_text(
-            "Package Management এখনো তৈরি হয়নি।"
-        )
-
-    elif text == "💳 Payment Settings":
-        await update.message.reply_text(
-            "Payment Settings এখনো তৈরি হয়নি।"
-        )
-
-    elif text == "🎯 Task Management":
-        await update.message.reply_text(
-            "Task Management এখনো তৈরি হয়নি।"
-        )
-
-    elif text == "📢 Broadcast":
-        await update.message.reply_text(
-            "Broadcast System এখনো তৈরি হয়নি।"
-        )
-
-    elif text == "📞 Support Settings":
-        await update.message.reply_text(
-            "Support Settings এখনো তৈরি হয়নি।"
-        )
-
-    elif text == "⚙️ Settings":
-        await update.message.reply_text(
-            "Settings এখনো তৈরি হয়নি।"
-        )
-
-    elif text == "👨‍💼 Job Admin":
-        await update.message.reply_text(
-            "Job Admin Management এখনো তৈরি হয়নি।"
-        )
-
-    elif text == "📜 Admin Logs":
-        await update.message.reply_text(
-            "Admin Logs এখনো তৈরি হয়নি।"
+            "এই বিভাগটি এখনো তৈরি করা হয়নি।"
         )
 
 
