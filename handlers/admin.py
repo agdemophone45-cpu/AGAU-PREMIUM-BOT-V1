@@ -1,4 +1,6 @@
 
+import logging
+
 from telegram import Update
 from telegram.ext import (
     CommandHandler,
@@ -11,15 +13,26 @@ from config import ADMIN_IDS
 from database import get_connection, add_admin_log
 from keyboards import admin_menu, main_menu
 
+logger = logging.getLogger(__name__)
+
 
 def is_admin(user_id):
     return user_id in ADMIN_IDS
 
 
-async def admin_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+def log_action(admin_id, action, target_user=None, reason=None):
+    try:
+        add_admin_log(
+            admin_id=admin_id,
+            action=action,
+            target_user=target_user,
+            reason=reason or "",
+        )
+    except Exception:
+        logger.exception("Failed to save admin activity log")
+
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user or not update.message:
         return
 
@@ -30,6 +43,9 @@ async def admin_command(
         return
 
     context.user_data.clear()
+    context.user_data["admin_mode"] = True
+
+    log_action(user_id, "Opened Admin Panel")
 
     await update.message.reply_text(
         "🔐 AGAU PREMIUM BOT ADMIN PANEL\n\n"
@@ -38,10 +54,7 @@ async def admin_command(
     )
 
 
-async def dashboard(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with get_connection() as db:
         users = db.execute(
             "SELECT COUNT(*) FROM users"
@@ -59,17 +72,11 @@ async def dashboard(
         ).fetchone()[0]
 
         deposits = db.execute(
-            """
-            SELECT COUNT(*) FROM deposits
-            WHERE status = 'pending'
-            """
+            "SELECT COUNT(*) FROM deposits WHERE status = 'pending'"
         ).fetchone()[0]
 
         withdrawals = db.execute(
-            """
-            SELECT COUNT(*) FROM withdrawals
-            WHERE status = 'pending'
-            """
+            "SELECT COUNT(*) FROM withdrawals WHERE status = 'pending'"
         ).fetchone()[0]
 
         tasks = db.execute(
@@ -79,12 +86,14 @@ async def dashboard(
             """
         ).fetchone()[0]
 
-        job_applications = db.execute(
+        applications = db.execute(
             """
             SELECT COUNT(*) FROM job_admin_applications
             WHERE status = 'pending'
             """
         ).fetchone()[0]
+
+    log_action(update.effective_user.id, "Viewed Dashboard")
 
     await update.message.reply_text(
         "📊 ADMIN DASHBOARD\n\n"
@@ -94,15 +103,14 @@ async def dashboard(
         f"📥 Pending Deposits: {deposits}\n"
         f"💸 Pending Withdrawals: {withdrawals}\n"
         f"🎯 Pending Tasks: {tasks}\n"
-        f"👨‍💼 Job Admin Applications: {job_applications}"
+        f"👨‍💼 Job Admin Applications: {applications}"
     )
 
 
-async def manage_users(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def manage_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["admin_action"] = "search_user"
+
+    log_action(update.effective_user.id, "Opened User Management")
 
     await update.message.reply_text(
         "👥 USER MANAGEMENT\n\n"
@@ -110,10 +118,7 @@ async def manage_users(
     )
 
 
-async def show_user(
-    update: Update,
-    target_id: int,
-):
+async def show_user(update: Update, target_id: int):
     with get_connection() as db:
         user = db.execute(
             "SELECT * FROM users WHERE user_id = ?",
@@ -126,9 +131,7 @@ async def show_user(
         ).fetchone()
 
     if not user:
-        await update.message.reply_text(
-            "এই User পাওয়া যায়নি।"
-        )
+        await update.message.reply_text("এই User পাওয়া যায়নি।")
         return
 
     balance_text = "Wallet পাওয়া যায়নি।"
@@ -160,26 +163,29 @@ async def show_user(
     )
 
 
-async def search_user(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def search_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_id = int(update.message.text.strip())
+
+        if target_id <= 0:
+            raise ValueError
+
     except (ValueError, TypeError):
-        await update.message.reply_text(
-            "সঠিক Telegram ID লিখুন।"
-        )
+        await update.message.reply_text("সঠিক Telegram ID লিখুন।")
         return
 
     context.user_data.pop("admin_action", None)
+
+    log_action(
+        update.effective_user.id,
+        "Viewed User Details",
+        target_user=target_id,
+    )
+
     await show_user(update, target_id)
 
 
-async def pending_deposits(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def pending_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with get_connection() as db:
         rows = db.execute(
             """
@@ -190,10 +196,10 @@ async def pending_deposits(
             """
         ).fetchall()
 
+    log_action(update.effective_user.id, "Viewed Pending Deposits")
+
     if not rows:
-        await update.message.reply_text(
-            "কোনো Pending Deposit নেই।"
-        )
+        await update.message.reply_text("কোনো Pending Deposit নেই।")
         return
 
     for row in rows:
@@ -207,10 +213,7 @@ async def pending_deposits(
         )
 
 
-async def pending_withdrawals(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def pending_withdrawals(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with get_connection() as db:
         rows = db.execute(
             """
@@ -221,10 +224,10 @@ async def pending_withdrawals(
             """
         ).fetchall()
 
+    log_action(update.effective_user.id, "Viewed Pending Withdrawals")
+
     if not rows:
-        await update.message.reply_text(
-            "কোনো Pending Withdrawal নেই।"
-        )
+        await update.message.reply_text("কোনো Pending Withdrawal নেই।")
         return
 
     for row in rows:
@@ -238,10 +241,7 @@ async def pending_withdrawals(
         )
 
 
-async def show_admin_logs(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def show_admin_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with get_connection() as db:
         rows = db.execute(
             """
@@ -269,11 +269,11 @@ async def show_admin_logs(
         )
 
 
-async def admin_router(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
+        return
+
+    if not update.effective_user:
         return
 
     user_id = update.effective_user.id
@@ -281,9 +281,20 @@ async def admin_router(
     if not is_admin(user_id):
         return
 
+    if not context.user_data.get("admin_mode"):
+        return
+
     text = update.message.text.strip()
 
     if context.user_data.get("admin_action") == "search_user":
+        if text == "🔙 User Menu":
+            context.user_data.clear()
+            await update.message.reply_text(
+                "User Menu",
+                reply_markup=main_menu(),
+            )
+            return
+
         await search_user(update, context)
         return
 
@@ -304,6 +315,8 @@ async def admin_router(
 
     elif text == "🔙 User Menu":
         context.user_data.clear()
+
+        log_action(user_id, "Returned to User Menu")
 
         await update.message.reply_text(
             "User Menu",
