@@ -19,6 +19,7 @@ from config import (
 )
 from database import (
     register_user,
+    process_referral,
     get_user,
     get_wallet,
     get_packages,
@@ -33,9 +34,13 @@ from keyboards import (
 
 
 def find_package(package_id):
+    if package_id is None:
+        return None
+
     for package in get_packages():
         if str(package["id"]) == str(package_id):
             return package
+
     return None
 
 
@@ -57,41 +62,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             referrer_id = int(context.args[0])
 
-            if referrer_id != user.id:
-                from database import add_transaction
-
-                with get_connection() as db:
-                    referrer = db.execute(
-                        "SELECT user_id FROM users WHERE user_id = ?",
-                        (referrer_id,),
-                    ).fetchone()
-
-                    if referrer:
-                        db.execute(
-                            """
-                            UPDATE users
-                            SET referral_count = referral_count + 1
-                            WHERE user_id = ?
-                            """,
-                            (referrer_id,),
-                        )
-
-                        db.execute(
-                            """
-                            UPDATE wallets
-                            SET referral_balance = referral_balance + ?
-                            WHERE user_id = ?
-                            """,
-                            (REFERRAL_REWARD, referrer_id),
-                        )
-
-                        add_transaction(
-                            referrer_id,
-                            "referral",
-                            REFERRAL_REWARD,
-                            "approved",
-                            f"Referral from {user.id}",
-                        )
+            process_referral(
+                user.id,
+                referrer_id,
+                REFERRAL_REWARD,
+            )
 
         except (ValueError, TypeError):
             pass
@@ -157,10 +132,7 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    packages = [
-        package for package in get_packages()
-        if package.get("active", 1)
-    ]
+    packages = get_packages()
 
     if not packages:
         await update.message.reply_text(
@@ -185,7 +157,7 @@ async def package_callback(
     package_id = query.data.removeprefix("package_")
     package = find_package(package_id)
 
-    if not package or not package.get("active", 1):
+    if not package:
         await query.message.reply_text(
             "এই Package বর্তমানে পাওয়া যাচ্ছে না।"
         )
@@ -240,7 +212,7 @@ async def payment_callback(
         return
 
     message = (
-        f"💳 Payment Information\n\n"
+        "💳 Payment Information\n\n"
         f"Method: {method}\n"
         f"Number: {number}\n"
     )
@@ -254,10 +226,9 @@ async def payment_callback(
         message += "\nPurpose: Deposit\n"
 
     message += (
-        "\nPayment সম্পন্ন করার আগে দায়িত্বশীল Owner-এর "
-        "নির্দেশনা নিন।\n\n"
-        "Payment যাচাই ছাড়া কোনো Balance বা Membership "
-        "পরিবর্তন হবে না।"
+        "\nPayment যাচাই ছাড়া কোনো Balance বা Membership "
+        "পরিবর্তন হবে না।\n"
+        "পরবর্তী নির্দেশনার জন্য দায়িত্বশীল Owner-এর সঙ্গে যোগাযোগ করুন।"
     )
 
     await query.message.reply_text(message)
