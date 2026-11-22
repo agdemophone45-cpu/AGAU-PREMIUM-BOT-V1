@@ -36,7 +36,7 @@ def main_menu(language="bn"):
 
 # Language selection
 def language_menu():
-    buttons = [
+    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
                 "🇧🇩 বাংলা",
@@ -47,12 +47,10 @@ def language_menu():
                 callback_data="lang_en",
             ),
         ]
-    ]
-
-    return InlineKeyboardMarkup(buttons)
+    ])
 
 
-# Admin main menu
+# Owner admin main menu
 def admin_menu():
     buttons = [
         ["📊 Dashboard", "👥 Manage Users"],
@@ -83,7 +81,7 @@ def back_menu(language="bn"):
 
 # Payment method selection
 def payment_menu():
-    buttons = [
+    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
                 "bKash",
@@ -94,14 +92,12 @@ def payment_menu():
                 callback_data="payment_nagad",
             ),
         ]
-    ]
-
-    return InlineKeyboardMarkup(buttons)
+    ])
 
 
-# Admin approve/reject buttons
+# Generic approve/reject buttons
 def review_menu(item_type, item_id):
-    buttons = [
+    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
                 "✅ Approve",
@@ -112,9 +108,7 @@ def review_menu(item_type, item_id):
                 callback_data=f"{item_type}_reject_{item_id}",
             ),
         ]
-    ]
-
-    return InlineKeyboardMarkup(buttons)
+    ])
 
 
 # Premium package buttons
@@ -122,7 +116,9 @@ def package_menu(packages):
     buttons = []
 
     for package in packages:
-        if not package.get("active", 1):
+        active = package.get("active", 1)
+
+        if str(active).lower() in ("0", "false", "none", ""):
             continue
 
         buttons.append([
@@ -132,12 +128,20 @@ def package_menu(packages):
             )
         ])
 
+    if not buttons:
+        buttons.append([
+            InlineKeyboardButton(
+                "No packages available",
+                callback_data="no_packages",
+            )
+        ])
+
     return InlineKeyboardMarkup(buttons)
 
 
 # Confirmation buttons
 def confirm_menu(action, item_id):
-    buttons = [
+    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
                 "✅ Confirm",
@@ -148,14 +152,12 @@ def confirm_menu(action, item_id):
                 callback_data=f"{action}_cancel_{item_id}",
             ),
         ]
-    ]
-
-    return InlineKeyboardMarkup(buttons)
+    ])
 
 
 # Job Admin application review
 def job_admin_review_menu(application_id):
-    buttons = [
+    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
                 "✅ Approve",
@@ -166,14 +168,12 @@ def job_admin_review_menu(application_id):
                 callback_data=f"job_reject_{application_id}",
             ),
         ]
-    ]
-
-    return InlineKeyboardMarkup(buttons)
+    ])
 
 
 # Job Admin permission options
 def job_admin_permission_menu(user_id):
-    buttons = [
+    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
                 "🔐 Set Permissions",
@@ -186,6 +186,4 @@ def job_admin_permission_menu(user_id):
                 callback_data=f"job_disable_{user_id}",
             )
         ],
-    ]
-
-    return InlineKeyboardMarkup(buttons)
+    ])
