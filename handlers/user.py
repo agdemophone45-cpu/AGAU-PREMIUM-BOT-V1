@@ -1,7 +1,5 @@
 
-import re
-from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from telegram import Update
 from telegram.ext import (
@@ -12,7 +10,13 @@ from telegram.ext import (
     filters,
 )
 
-from config import REFERRAL_REWARD, SUPPORT_TELEGRAM, SUPPORT_EMAIL
+from config import (
+    REFERRAL_REWARD,
+    SUPPORT_TELEGRAM,
+    SUPPORT_EMAIL,
+    BKASH_NUMBER,
+    NAGAD_NUMBER,
+)
 from database import (
     register_user,
     get_user,
@@ -26,32 +30,6 @@ from keyboards import (
     payment_menu,
     package_menu,
 )
-
-FLOW_KEY = "payment_flow"
-
-
-def now_iso():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def normalize_amount(value):
-    value = value.translate(
-        str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
-    )
-    value = value.replace(",", "").strip()
-
-    if not re.fullmatch(r"\d+(?:\.\d{1,2})?", value):
-        return None
-
-    try:
-        amount = Decimal(value)
-    except InvalidOperation:
-        return None
-
-    if amount <= 0 or amount > Decimal("1000000"):
-        return None
-
-    return amount.quantize(Decimal("0.01"))
 
 
 def find_package(package_id):
@@ -67,9 +45,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user or not update.message:
         return
 
-    context.user_data.pop(FLOW_KEY, None)
-    context.user_data.pop("selected_package", None)
-    context.user_data.pop("payment_purpose", None)
+    context.user_data.clear()
 
     is_new = register_user(
         user.id,
@@ -82,7 +58,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             referrer_id = int(context.args[0])
 
             if referrer_id != user.id:
-                rewarded = False
+                from database import add_transaction
 
                 with get_connection() as db:
                     referrer = db.execute(
@@ -109,18 +85,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             (REFERRAL_REWARD, referrer_id),
                         )
 
-                        rewarded = True
-
-                if rewarded:
-                    from database import add_transaction
-
-                    add_transaction(
-                        referrer_id,
-                        "referral",
-                        REFERRAL_REWARD,
-                        "approved",
-                        f"Referral from {user.id}",
-                    )
+                        add_transaction(
+                            referrer_id,
+                            "referral",
+                            REFERRAL_REWARD,
+                            "approved",
+                            f"Referral from {user.id}",
+                        )
 
         except (ValueError, TypeError):
             pass
@@ -186,7 +157,10 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    packages = get_packages()
+    packages = [
+        package for package in get_packages()
+        if package.get("active", 1)
+    ]
 
     if not packages:
         await update.message.reply_text(
@@ -202,7 +176,8 @@ async def premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def package_callback(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
 ):
     query = update.callback_query
     await query.answer()
@@ -210,26 +185,26 @@ async def package_callback(
     package_id = query.data.removeprefix("package_")
     package = find_package(package_id)
 
-    if not package:
+    if not package or not package.get("active", 1):
         await query.message.reply_text(
-            "এই Package বর্তমানে পাওয়া যাচ্ছে না। আবার চেষ্টা করুন।"
+            "এই Package বর্তমানে পাওয়া যাচ্ছে না।"
         )
         return
 
     context.user_data["selected_package"] = str(package_id)
     context.user_data["payment_purpose"] = "premium"
-    context.user_data.pop(FLOW_KEY, None)
 
     await query.message.reply_text(
         f"💎 Package: {package['name']}\n"
         f"💰 Price: {package['price']} TK\n\n"
-        "Payment method নির্বাচন করুন:",
+        "Payment Method নির্বাচন করুন:",
         reply_markup=payment_menu(),
     )
 
 
 async def payment_callback(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
 ):
     query = update.callback_query
     await query.answer()
@@ -243,44 +218,49 @@ async def payment_callback(
         return
 
     purpose = context.user_data.get("payment_purpose", "deposit")
-    package_id = context.user_data.get("selected_package")
-
     package = None
 
     if purpose == "premium":
-        package = find_package(package_id)
+        package = find_package(
+            context.user_data.get("selected_package")
+        )
 
         if not package:
-            context.user_data.pop("payment_purpose", None)
-            context.user_data.pop("selected_package", None)
-
             await query.message.reply_text(
-                "Package পাওয়া যায়নি। আবার চেষ্টা করুন।"
+                "Package পাওয়া যায়নি। আবার নির্বাচন করুন।"
             )
             return
 
-    context.user_data[FLOW_KEY] = {
-        "step": "amount",
-        "method": method,
-        "purpose": purpose,
-        "package_id": (
-            str(package_id) if package_id is not None else None
-        ),
-    }
+    number = BKASH_NUMBER if method == "BKASH" else NAGAD_NUMBER
+
+    if not number:
+        await query.message.reply_text(
+            f"{method} নম্বর এখনো Admin Settings-এ সেট করা হয়নি।"
+        )
+        return
+
+    message = (
+        f"💳 Payment Information\n\n"
+        f"Method: {method}\n"
+        f"Number: {number}\n"
+    )
 
     if package:
-        prompt = (
-            f"💎 Package: {package['name']}\n"
-            f"💰 নির্ধারিত মূল্য: {package['price']} TK\n\n"
-            f"{method} দিয়ে Payment করার পর পাঠানো Amount লিখুন।"
+        message += (
+            f"\nPackage: {package['name']}\n"
+            f"Price: {package['price']} TK\n"
         )
     else:
-        prompt = (
-            f"{method} দিয়ে Deposit করার পর কত TK পাঠিয়েছেন?\n\n"
-            "শুধু Amount লিখুন। যেমন: 100"
-        )
+        message += "\nPurpose: Deposit\n"
 
-    await query.message.reply_text(prompt)
+    message += (
+        "\nPayment সম্পন্ন করার আগে দায়িত্বশীল Owner-এর "
+        "নির্দেশনা নিন।\n\n"
+        "Payment যাচাই ছাড়া কোনো Balance বা Membership "
+        "পরিবর্তন হবে না।"
+    )
+
+    await query.message.reply_text(message)
 
 
 async def language(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -291,7 +271,8 @@ async def language(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def language_callback(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
 ):
     query = update.callback_query
     await query.answer()
@@ -355,7 +336,7 @@ async def earn_money(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "💸 Withdrawal System\n\n"
-        "Withdrawal Request System প্রস্তুত করা হচ্ছে।"
+        "Withdrawal System প্রস্তুত করা হচ্ছে।"
     )
 
 
@@ -391,169 +372,14 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
-async def save_payment_request(
+async def text_router(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-):
-    user_id = update.effective_user.id
-    state = context.user_data.get(FLOW_KEY)
-
-    if not state or state.get("step") != "screenshot":
-        return
-
-    if not update.message.photo:
-        await update.message.reply_text(
-            "Payment Screenshot ছবি হিসেবে পাঠান।"
-        )
-        return
-
-    screenshot_id = update.message.photo[-1].file_id
-
-    details = (
-        f"Purpose: {state['purpose']}; "
-        f"Method: {state['method']}; "
-        f"Transaction ID: {state['transaction_id']}"
-    )
-
-    if state.get("package_id"):
-        details += f"; Package ID: {state['package_id']}"
-
-    try:
-        with get_connection() as db:
-            cursor = db.execute(
-                """
-                INSERT INTO deposits
-                (user_id, method, amount, transaction_id,
-                 screenshot_id, status, created_at)
-                VALUES (?, ?, ?, ?, ?, 'pending', ?)
-                """,
-                (
-                    user_id,
-                    state["method"],
-                    float(state["amount"]),
-                    state["transaction_id"],
-                    screenshot_id,
-                    now_iso(),
-                ),
-            )
-
-            deposit_id = cursor.lastrowid
-
-            db.execute(
-                """
-                INSERT INTO transactions
-                (user_id, type, amount, status, details, created_at)
-                VALUES (?, ?, ?, 'pending', ?, ?)
-                """,
-                (
-                    user_id,
-                    "premium_purchase"
-                    if state["purpose"] == "premium" else "deposit",
-                    float(state["amount"]),
-                    details + f"; Deposit ID: {deposit_id}",
-                    now_iso(),
-                ),
-            )
-
-    except Exception:
-        await update.message.reply_text(
-            "❌ Request সংরক্ষণ করা যায়নি। পরে আবার চেষ্টা করুন।"
-        )
-        return
-
-    context.user_data.pop(FLOW_KEY, None)
-    context.user_data.pop("selected_package", None)
-    context.user_data.pop("payment_purpose", None)
-
-    await update.message.reply_text(
-        "✅ আপনার Payment Request জমা হয়েছে।\n\n"
-        f"💰 Amount: {Decimal(str(state['amount'])):.2f} TK\n"
-        f"💳 Method: {state['method']}\n"
-        "📌 Status: Pending Admin Verification\n\n"
-        "Admin যাচাই না করা পর্যন্ত Balance বা Premium Active হবে না।",
-        reply_markup=main_menu(),
-    )
-
-
-async def text_router(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
     if not update.message or not update.message.text:
         return
 
     message_text = update.message.text.strip()
-    state = context.user_data.get(FLOW_KEY)
-
-    # Payment input is handled before menu buttons.
-    if state:
-        step = state.get("step")
-
-        if step == "amount":
-            amount = normalize_amount(message_text)
-
-            if amount is None:
-                await update.message.reply_text(
-                    "❌ সঠিক Amount লিখুন। যেমন: 100"
-                )
-                return
-
-            if state["purpose"] == "premium":
-                package = find_package(state.get("package_id"))
-
-                if not package:
-                    context.user_data.pop(FLOW_KEY, None)
-                    await update.message.reply_text(
-                        "Package পাওয়া যাচ্ছে না। আবার নির্বাচন করুন।"
-                    )
-                    return
-
-                try:
-                    expected = Decimal(
-                        str(package["price"])
-                    ).quantize(Decimal("0.01"))
-                except InvalidOperation:
-                    await update.message.reply_text(
-                        "Package-এর মূল্য সঠিকভাবে সেট করা নেই। Admin-এর সঙ্গে যোগাযোগ করুন।"
-                    )
-                    return
-
-                if amount != expected:
-                    await update.message.reply_text(
-                        f"❌ সঠিক Amount লিখুন: {expected:.2f} TK"
-                    )
-                    return
-
-            state["amount"] = str(amount)
-            state["step"] = "transaction_id"
-
-            await update.message.reply_text(
-                "✅ Amount গ্রহণ করা হয়েছে।\n\n"
-                "এখন Payment Transaction ID পাঠান।"
-            )
-            return
-
-        if step == "transaction_id":
-            transaction_id = message_text.strip()
-
-            if not 4 <= len(transaction_id) <= 100:
-                await update.message.reply_text(
-                    "❌ সঠিক Transaction ID পাঠান।"
-                )
-                return
-
-            state["transaction_id"] = transaction_id
-            state["step"] = "screenshot"
-
-            await update.message.reply_text(
-                "এখন Payment Screenshot ছবি হিসেবে পাঠান।"
-            )
-            return
-
-        if step == "screenshot":
-            await update.message.reply_text(
-                "আপনার Payment Screenshot ছবি হিসেবে পাঠান।"
-            )
-            return
 
     if message_text == "💰 My Wallet":
         await wallet(update, context)
@@ -588,7 +414,6 @@ async def text_router(
     elif message_text == "📥 Deposit":
         context.user_data["payment_purpose"] = "deposit"
         context.user_data.pop("selected_package", None)
-        context.user_data.pop(FLOW_KEY, None)
 
         await update.message.reply_text(
             "Deposit করতে bKash অথবা Nagad নির্বাচন করুন:",
@@ -596,7 +421,7 @@ async def text_router(
         )
 
     elif message_text in ("🔙 User Menu", "🔙 Back", "🔙 ফিরে যান"):
-        context.user_data.pop(FLOW_KEY, None)
+        context.user_data.clear()
 
         await update.message.reply_text(
             "User Menu",
@@ -611,41 +436,32 @@ async def text_router(
 
 
 def register_user_handlers(application):
-    application.add_handler(
-        CommandHandler("start", start)
-    )
+    application.add_handler(CommandHandler("start", start))
 
     application.add_handler(
         CallbackQueryHandler(
             package_callback,
-            pattern=r"^package_"
+            pattern=r"^package_",
         )
     )
 
     application.add_handler(
         CallbackQueryHandler(
             payment_callback,
-            pattern=r"^payment_"
+            pattern=r"^payment_",
         )
     )
 
     application.add_handler(
         CallbackQueryHandler(
             language_callback,
-            pattern=r"^lang_"
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.PHOTO,
-            save_payment_request
+            pattern=r"^lang_",
         )
     )
 
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            text_router
+            text_router,
         )
     )
