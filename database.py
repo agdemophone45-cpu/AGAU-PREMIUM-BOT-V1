@@ -16,12 +16,12 @@ def get_connection():
     if folder:
         os.makedirs(folder, exist_ok=True)
 
-    connection = sqlite3.connect(DB_PATH, timeout=30)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA busy_timeout = 30000")
+    db = sqlite3.connect(DB_PATH, timeout=30)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys = ON")
+    db.execute("PRAGMA busy_timeout = 30000")
 
-    return connection
+    return db
 
 
 def init_db():
@@ -157,7 +157,6 @@ def init_db():
             )
         """)
 
-        # Job Admin applications
         db.execute("""
             CREATE TABLE IF NOT EXISTS job_admin_applications (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,7 +173,6 @@ def init_db():
             )
         """)
 
-        # Approved Job Admins and individual permissions
         db.execute("""
             CREATE TABLE IF NOT EXISTS job_admins (
                 user_id INTEGER PRIMARY KEY,
@@ -186,7 +184,6 @@ def init_db():
             )
         """)
 
-        # Private bot-mediated support tickets
         db.execute("""
             CREATE TABLE IF NOT EXISTS support_tickets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -214,22 +211,26 @@ def init_db():
             )
         """)
 
-        # One-time package initialization/migration.
+        # Package initialization
         migration = db.execute(
             "SELECT value FROM settings WHERE key = ?",
             ("packages_v2_migrated",),
         ).fetchone()
 
         if not migration:
-            db.execute(
-                "UPDATE packages SET active = 0"
-            )
+            db.execute("UPDATE packages SET active = 0")
 
             for package in DEFAULT_PACKAGES:
                 existing = db.execute(
                     "SELECT id FROM packages WHERE name = ?",
                     (package["name"],),
                 ).fetchone()
+
+                values = (
+                    package["duration_days"],
+                    package["price"],
+                    int(package.get("active", True)),
+                )
 
                 if existing:
                     db.execute("""
@@ -238,23 +239,13 @@ def init_db():
                             price = ?,
                             active = ?
                         WHERE id = ?
-                    """, (
-                        package["duration_days"],
-                        package["price"],
-                        int(package.get("active", True)),
-                        existing["id"],
-                    ))
+                    """, (*values, existing["id"]))
                 else:
                     db.execute("""
                         INSERT INTO packages
                         (name, duration_days, price, active)
                         VALUES (?, ?, ?, ?)
-                    """, (
-                        package["name"],
-                        package["duration_days"],
-                        package["price"],
-                        int(package.get("active", True)),
-                    ))
+                    """, (package["name"], *values))
 
             db.execute("""
                 INSERT OR REPLACE INTO settings (key, value)
@@ -296,6 +287,63 @@ def register_user(user_id, username, full_name):
         return True
 
 
+def process_referral(new_user_id, referrer_id, reward):
+    if new_user_id == referrer_id:
+        return False
+
+    now = now_iso()
+
+    with get_connection() as db:
+        new_user = db.execute(
+            "SELECT referred_by FROM users WHERE user_id = ?",
+            (new_user_id,),
+        ).fetchone()
+
+        referrer = db.execute(
+            "SELECT user_id FROM users WHERE user_id = ?",
+            (referrer_id,),
+        ).fetchone()
+
+        if not new_user or not referrer:
+            return False
+
+        if new_user["referred_by"] is not None:
+            return False
+
+        db.execute("""
+            UPDATE users
+            SET referred_by = ?
+            WHERE user_id = ?
+        """, (referrer_id, new_user_id))
+
+        db.execute("""
+            UPDATE users
+            SET referral_count = referral_count + 1
+            WHERE user_id = ?
+        """, (referrer_id,))
+
+        db.execute("""
+            UPDATE wallets
+            SET referral_balance = referral_balance + ?
+            WHERE user_id = ?
+        """, (reward, referrer_id))
+
+        db.execute("""
+            INSERT INTO transactions
+            (user_id, type, amount, status, details, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            referrer_id,
+            "referral",
+            reward,
+            "approved",
+            f"Referral from {new_user_id}",
+            now,
+        ))
+
+        return True
+
+
 def get_user(user_id):
     with get_connection() as db:
         return db.execute(
@@ -316,8 +364,7 @@ def get_packages(include_inactive=False):
     with get_connection() as db:
         if include_inactive:
             rows = db.execute("""
-                SELECT * FROM packages
-                ORDER BY id
+                SELECT * FROM packages ORDER BY id
             """).fetchall()
         else:
             rows = db.execute("""
